@@ -9,6 +9,7 @@
     ChevronLeft,
     ChevronRight,
     RotateCw,
+    FlipHorizontal,
     Crop,
     PenLine,
     Pen,
@@ -100,12 +101,16 @@
       vy = 0,
       vw = rw,
       vh = rh;
+    let flipH = 1;
     for (const op of ops) {
       if (op.type === "crop") {
         vx += op.x;
         vy += op.y;
         vw = op.w;
         vh = op.h;
+      } else if (op.type === "flipH") {
+        flipH = -flipH;
+        vx = rw - (vx + vw);
       } else if (op.type === "rotate") {
         const steps = Math.round((((op.deg % 360) + 360) % 360) / 90);
         for (let s = 0; s < steps; s++) {
@@ -123,7 +128,7 @@
     }
     const ox = rot === 90 || rot === 180 ? rw - vx : -vx;
     const oy = rot === 180 || rot === 270 ? rh - vy : -vy;
-    return `width:${(img.width / vw) * 100}%;height:${(img.height / vh) * 100}%;left:${(ox / vw) * 100}%;top:${(oy / vh) * 100}%;transform:rotate(${rot}deg)`;
+    return `width:${(img.width / vw) * 100}%;height:${(img.height / vh) * 100}%;left:${(ox / vw) * 100}%;top:${(oy / vh) * 100}%;transform:rotate(${rot}deg) scaleX(${flipH})`;
   });
 
   let rawBlob: Blob | null = null;
@@ -761,6 +766,11 @@
   }
 
   // ---------- Rotation Actions ----------
+  function flipHorizontal() {
+    if (!img) return;
+    commit({ type: "flipH" });
+  }
+
   function rotateClockwise() {
     if (!img) return;
     commit({ type: "rotate", deg: 90 });
@@ -1011,7 +1021,7 @@
         c: copy,
         s: e.shiftKey ? saveAs : save,
         p: openPrint,
-        r: rotateClockwise,
+        r: e.shiftKey ? flipHorizontal : rotateClockwise,
         m: () => setMode("mark"),
         t: toggleOcr,
         "+": () => zoomStep(1.25),
@@ -1026,7 +1036,11 @@
     } else if (mode === "view") {
       if (k === "r") {
         e.preventDefault();
-        rotateClockwise();
+        if (e.shiftKey) {
+          flipHorizontal();
+        } else {
+          rotateClockwise();
+        }
       } else if (k === "c") {
         e.preventDefault();
         setMode("crop");
@@ -1254,8 +1268,13 @@
               <Menubar.Separator />
               <Menubar.Item disabled={!img} onSelect={rotateClockwise}>
                 <RotateCw class="size-4" />
-                <span>Putar 90°</span>
+                <span>Rotate 90°</span>
                 <Menubar.Shortcut>R</Menubar.Shortcut>
+              </Menubar.Item>
+              <Menubar.Item disabled={!img} onSelect={flipHorizontal}>
+                <FlipHorizontal class="size-4" />
+                <span>Flip Horizontal</span>
+                <Menubar.Shortcut>Shift+R</Menubar.Shortcut>
               </Menubar.Item>
               <Menubar.Item disabled={!img} onSelect={() => setMode("crop")}>
                 <Crop class="size-4" />
@@ -1353,6 +1372,10 @@
           <div class="flex items-center justify-between gap-3">
             <span>Putar 90°</span>
             <kbd class="px-1.5 py-0.5 rounded bg-muted text-[11px] font-mono text-foreground border border-border shadow-2xs">R</kbd>
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <span>Balik Horizontal</span>
+            <kbd class="px-1.5 py-0.5 rounded bg-muted text-[11px] font-mono text-foreground border border-border shadow-2xs">Shift + R</kbd>
           </div>
           <div class="flex items-center justify-between gap-3">
             <span>Potong Gambar (Crop)</span>

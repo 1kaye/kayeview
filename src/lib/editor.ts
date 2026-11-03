@@ -5,6 +5,7 @@ export type Tool = "pen" | "highlighter" | "eraser";
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Op =
   | { type: "rotate"; deg: number }
+  | { type: "flipH" }
   | ({ type: "crop" } & Rect)
   | { type: "stroke"; tool: Tool; color: string; size: number; points: [number, number][] };
 
@@ -162,6 +163,16 @@ function rotate(src: HTMLCanvasElement, deg: number) {
   return c;
 }
 
+function flipH(src: HTMLCanvasElement) {
+  const c = canvas(src.width, src.height);
+  const ctx = c.getContext("2d")!;
+  ctx.translate(src.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(src, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  return c;
+}
+
 function crop(src: HTMLCanvasElement, r: Rect) {
   const x = r.w < 0 ? r.x + r.w : r.x;
   const y = r.h < 0 ? r.y + r.h : r.y;
@@ -210,6 +221,7 @@ export function drawStroke(ctx: CanvasRenderingContext2D, op: Extract<Op, { type
 
 export function applyOp(l: Layers, op: Op): Layers {
   if (op.type === "rotate") return { base: rotate(l.base, op.deg), marks: rotate(l.marks, op.deg) };
+  if (op.type === "flipH") return { base: flipH(l.base), marks: flipH(l.marks) };
   if (op.type === "crop") return { base: crop(l.base, op), marks: crop(l.marks, op) };
   drawStroke(l.marks.getContext("2d")!, op);
   return l;
@@ -517,7 +529,7 @@ export async function editAnimatedGif(
       const frameCount: number = decoder.tracks.selectedTrack?.frameCount ?? 1;
 
       if (frameCount > 0) {
-        const geomOps = ops.filter((o) => o.type === "rotate" || o.type === "crop");
+        const geomOps = ops.filter((o) => o.type === "rotate" || o.type === "crop" || o.type === "flipH");
         const strokeOps = ops.filter(
           (o): o is Extract<Op, { type: "stroke" }> => o.type === "stroke"
         );
@@ -538,6 +550,7 @@ export async function editAnimatedGif(
           for (const op of geomOps) {
             if (op.type === "rotate") base = rotate(base, op.deg);
             else if (op.type === "crop") base = crop(base, op);
+            else if (op.type === "flipH") base = flipH(base);
           }
 
           if (marksCanvas && marksCanvas.width > 0 && marksCanvas.height > 0) {
