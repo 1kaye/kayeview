@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "kayeview",
+  "version": "0.1.0",
+  "identifier": "com.kaye.kayeview",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "kayeview",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "fileAssociations": [
+      { "ext": ["png", "apng"], "mimeType": "image/png" },
+      { "ext": ["jpg", "jpeg", "jpe", "jfif"], "mimeType": "image/jpeg" },
+      { "ext": ["webp"], "mimeType": "image/webp" },
+      { "ext": ["gif"], "mimeType": "image/gif" },
+      { "ext": ["bmp", "dib", "rle"], "mimeType": "image/bmp" },
+      { "ext": ["ico", "cur"], "mimeType": "image/x-icon" },
+      { "ext": ["svg"], "mimeType": "image/svg+xml" },
+      { "ext": ["avif"], "mimeType": "image/avif" },
+      { "ext": ["heic", "heif", "hif"], "mimeType": "image/heic" },
+      { "ext": ["jxl"], "mimeType": "image/jxl" },
+      { "ext": ["tif", "tiff"], "mimeType": "image/tiff" },
+      { "ext": ["jxr", "wdp", "hdp"], "mimeType": "image/vnd.ms-photo" },
+      { "ext": ["dds", "tga", "raw", "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "pef", "raf", "srw", "erf", "kdc", "dcr", "mef", "mrw", "mos", "3fr", "fff", "iiq", "x3f", "rwl"], "mimeType": "image/x-raw" }
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
