@@ -16,6 +16,7 @@
     SlidersHorizontal,
     PanelLeftClose,
     PanelLeftOpen,
+    X,
   } from "@lucide/svelte";
 
   import { Button } from "$lib/components/ui/button";
@@ -53,6 +54,7 @@
     radius: number;
     customClip: string;
     outline: number;
+    color?: string;
     src: string;
     aspect: number;
   };
@@ -256,6 +258,7 @@
   let newShape = $state<ShapeKey>("rect");
   let newRadius = $state(0);
   let newCustomClip = $state("polygon(20% 0%, 80% 0%, 100% 100%, 0% 100%)");
+  let newColor = $state("");
 
   type DragState =
     | { kind: "move"; b: Box; sx: number; sy: number; x0: number; y0: number }
@@ -440,6 +443,7 @@
           radius: newRadius,
           customClip: newCustomClip,
           outline: 0,
+          color: newColor || undefined,
           src: url,
           aspect: a,
         });
@@ -635,6 +639,10 @@
             ctx.translate(-(bx + bw / 2), -(by + bh / 2));
           }
           applyCanvasClip(ctx, b, bx, by, bw, bh);
+          if (b.color) {
+            ctx.fillStyle = b.color;
+            ctx.fillRect(bx, by, bw, bh);
+          }
           const ix = bx + ((b.w - p.w) / 2 + b.ox) * ppm;
           const iy = by + ((b.h - p.h) / 2 + b.oy) * ppm;
           ctx.drawImage(im, ix, iy, p.w * ppm, p.h * ppm);
@@ -723,6 +731,7 @@
       radius: newRadius,
       customClip: newCustomClip,
       outline: 0,
+      color: newColor || undefined,
       src: boxSrc,
       aspect: boxAspect,
     });
@@ -1322,8 +1331,38 @@
         </Card.Root>
 
         <Card.Root size="sm" class="bg-card/70 border-border/80 p-4 gap-3.5 shadow-xs rounded-xl shrink-0">
-          <Card.Header class="p-0">
+          <Card.Header class="p-0 flex flex-row items-center justify-between">
             <Card.Title class="text-xs font-semibold text-left">Tambah Bentuk ({newW}×{newH})</Card.Title>
+            <div class="flex items-center gap-1.5 shrink-0">
+              {#if newColor}
+                <button
+                  type="button"
+                  class="size-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-muted/80 transition-colors cursor-pointer"
+                  title="Hapus Warna (Tanpa Warna)"
+                  onclick={() => (newColor = "")}
+                >
+                  <X size={13} />
+                </button>
+              {/if}
+              <label
+                class="relative inline-flex items-center justify-center size-7 rounded-lg border border-input bg-card/60 shadow-2xs cursor-pointer transition-transform hover:scale-105"
+                title={newColor ? `Warna Bentuk: ${newColor} (Klik untuk ganti)` : "Pilih Warna Bentuk (Tanpa Warna)"}
+              >
+                {#if newColor}
+                  <span class="size-4 rounded-full border border-white/80 shadow-2xs" style:background-color={newColor}></span>
+                {:else}
+                  <span class="size-4 rounded-full border border-dashed border-muted-foreground/60 flex items-center justify-center relative overflow-hidden" title="Tanpa Warna">
+                    <span class="absolute w-5 h-[1.5px] bg-destructive/70 rotate-45"></span>
+                  </span>
+                {/if}
+                <input
+                  type="color"
+                  value={newColor || "#ffffff"}
+                  oninput={(e) => (newColor = (e.currentTarget as HTMLInputElement).value)}
+                  class="absolute inset-0 opacity-0 cursor-pointer"
+                />
+              </label>
+            </div>
           </Card.Header>
           <Card.Content class="p-0 flex flex-col gap-2.5">
             <div class="grid grid-cols-2 gap-2">
@@ -1435,8 +1474,42 @@
 
         {#if boxes[sel]}
           <Card.Root size="sm" class="bg-card/80 border-primary/50 shadow-xs ring-1 ring-primary/20 p-4 gap-3.5 rounded-xl shrink-0">
-            <Card.Header class="p-0">
+            <Card.Header class="p-0 flex flex-row items-center justify-between">
               <Card.Title class="text-xs font-semibold text-primary text-left">Terpilih (#{sel + 1})</Card.Title>
+              <div class="flex items-center gap-1.5 shrink-0">
+                {#if boxes[sel].color}
+                  <button
+                    type="button"
+                    class="size-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-muted/80 transition-colors cursor-pointer"
+                    title="Hapus Warna (Tanpa Warna)"
+                    onclick={() => {
+                      pushUndo();
+                      boxes[sel].color = "";
+                    }}
+                  >
+                    <X size={13} />
+                  </button>
+                {/if}
+                <label
+                  class="relative inline-flex items-center justify-center size-7 rounded-lg border border-input bg-card/60 shadow-2xs cursor-pointer transition-transform hover:scale-105"
+                  title={boxes[sel].color ? `Warna Bentuk: ${boxes[sel].color} (Klik untuk ganti)` : "Pilih Warna Bentuk (Tanpa Warna)"}
+                >
+                  {#if boxes[sel].color}
+                    <span class="size-4 rounded-full border border-white/80 shadow-2xs" style:background-color={boxes[sel].color}></span>
+                  {:else}
+                    <span class="size-4 rounded-full border border-dashed border-muted-foreground/60 flex items-center justify-center relative overflow-hidden" title="Tanpa Warna">
+                      <span class="absolute w-5 h-[1.5px] bg-destructive/70 rotate-45"></span>
+                    </span>
+                  {/if}
+                  <input
+                    type="color"
+                    value={boxes[sel].color || "#ffffff"}
+                    onpointerdown={() => pushUndo()}
+                    oninput={(e) => (boxes[sel].color = (e.currentTarget as HTMLInputElement).value)}
+                    class="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                </label>
+              </div>
             </Card.Header>
             <Card.Content class="p-0 flex flex-col gap-2.5">
               <div class="grid grid-cols-2 gap-2">
@@ -1784,7 +1857,7 @@
             {@const outMm = (b.outline || 0) / PX_PER_MM}
             <div
               class="box"
-              style="left:{b.x}mm;top:{b.y}mm;width:{b.w}mm;height:{b.h}mm;clip-path:{clipOf(b)};transform:rotate({b.rot}deg)"
+              style="left:{b.x}mm;top:{b.y}mm;width:{b.w}mm;height:{b.h}mm;clip-path:{clipOf(b)};transform:rotate({b.rot}deg);{b.color ? `background-color:${b.color};` : ''}"
               role="presentation"
               onpointerdown={(e) => startDrag(e, i, "pan-photo")}
               onwheel={(e) => onBoxWheel(e, i)}
