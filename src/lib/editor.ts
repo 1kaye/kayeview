@@ -219,17 +219,58 @@ export function drawStroke(ctx: CanvasRenderingContext2D, op: Extract<Op, { type
   ctx.restore();
 }
 
+export function releaseCanvas(c?: HTMLCanvasElement | null) {
+  if (c) {
+    c.width = 0;
+    c.height = 0;
+  }
+}
+
+export function releaseLayers(l?: Layers | null) {
+  if (l) {
+    releaseCanvas(l.base);
+    releaseCanvas(l.marks);
+  }
+}
+
+export function hasMarks(l: Layers): boolean {
+  return l.marks.width > 1 || l.marks.height > 1;
+}
+
 export function applyOp(l: Layers, op: Op): Layers {
-  if (op.type === "rotate") return { base: rotate(l.base, op.deg), marks: rotate(l.marks, op.deg) };
-  if (op.type === "flipH") return { base: flipH(l.base), marks: flipH(l.marks) };
-  if (op.type === "crop") return { base: crop(l.base, op), marks: crop(l.marks, op) };
+  const marked = hasMarks(l);
+  if (op.type === "rotate") {
+    const nextBase = rotate(l.base, op.deg);
+    const nextMarks = marked ? rotate(l.marks, op.deg) : l.marks;
+    releaseCanvas(l.base);
+    if (marked) releaseCanvas(l.marks);
+    return { base: nextBase, marks: nextMarks };
+  }
+  if (op.type === "flipH") {
+    const nextBase = flipH(l.base);
+    const nextMarks = marked ? flipH(l.marks) : l.marks;
+    releaseCanvas(l.base);
+    if (marked) releaseCanvas(l.marks);
+    return { base: nextBase, marks: nextMarks };
+  }
+  if (op.type === "crop") {
+    const nextBase = crop(l.base, op);
+    const nextMarks = marked ? crop(l.marks, op) : l.marks;
+    releaseCanvas(l.base);
+    if (marked) releaseCanvas(l.marks);
+    return { base: nextBase, marks: nextMarks };
+  }
+  if (l.marks.width !== l.base.width || l.marks.height !== l.base.height) {
+    l.marks.width = l.base.width;
+    l.marks.height = l.base.height;
+  }
   drawStroke(l.marks.getContext("2d")!, op);
   return l;
 }
 
-/** Replays all ops on top of the original image. */
+/** Replays all ops on top of the original image (marks layer dialokasikan secara lazy). */
 export function render(img: ImageBitmap, ops: Op[]): Layers {
-  let l = { base: canvas(img.width, img.height), marks: canvas(img.width, img.height) };
+  let l = { base: canvas(img.width, img.height), marks: canvas(1, 1) };
   l.base.getContext("2d")!.drawImage(img, 0, 0);
   for (const op of ops) l = applyOp(l, op);
   return l;
@@ -243,7 +284,7 @@ export function flatten(l: Layers, background?: string) {
     ctx.fillRect(0, 0, c.width, c.height);
   }
   ctx.drawImage(l.base, 0, 0);
-  ctx.drawImage(l.marks, 0, 0);
+  if (hasMarks(l)) ctx.drawImage(l.marks, 0, 0);
   return c;
 }
 
@@ -683,9 +724,118 @@ function isAnimated(ext: string, buf: ArrayBuffer): boolean {
   return false;
 }
 
-export async function readImage(
-  path: string
-): Promise<{ bmp: ImageBitmap; size: number; blob: Blob | null }> {
+export type DecodedImage = { bmp: ImageBitmap; size: number; blob: Blob | null };
+
+const MAX_PREFETCH_ENTRIES = 3; // Sliding window: [current + 1, current + 2, current - 1]
+const MAX_PREFETCH_BYTES = 160 * 1024 * 1024; // Kuota maksimum 160 MB uncompressed RGBA
+
+type CacheItem = DecodedImage & { byteCost: number };
+const bitmapCache = new Map<string, CacheItem>();
+let cachedBytes = 0;
+let prefetchSeq = 0;
+let prefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function evictCachedImage(path: string) {
+  const item = bitmapCache.get(path);
+  if (item) {
+    item.bmp.close();
+    cachedBytes = Math.max(0, cachedBytes - item.byteCost);
+    bitmapCache.delete(path);
+  }
+}
+
+export function clearImageCache() {
+  for (const item of bitmapCache.values()) {
+    item.bmp.close();
+  }
+  bitmapCache.clear();
+  cachedBytes = 0;
+}
+
+export function cacheDecodedImage(path: string, decoded: DecodedImage) {
+  const byteCost = decoded.bmp.width * decoded.bmp.height * 4;
+  if (byteCost > MAX_PREFETCH_BYTES) return;
+  evictCachedImage(path);
+  while (
+    bitmapCache.size >= MAX_PREFETCH_ENTRIES ||
+    (cachedBytes + byteCost > MAX_PREFETCH_BYTES && bitmapCache.size > 0)
+  ) {
+    const oldestKey = bitmapCache.keys().next().value;
+    if (!oldestKey) break;
+    evictCachedImage(oldestKey);
+  }
+  bitmapCache.set(path, { ...decoded, byteCost });
+  cachedBytes += byteCost;
+}
+
+export function takeCachedImage(path: string): DecodedImage | null {
+  const item = bitmapCache.get(path);
+  if (!item) return null;
+  bitmapCache.delete(path);
+  cachedBytes = Math.max(0, cachedBytes - item.byteCost);
+  return { bmp: item.bmp, size: item.size, blob: item.blob };
+}
+
+export function schedulePrefetch(files: string[], currentPath: string | null) {
+  const seq = ++prefetchSeq;
+  if (prefetchTimer) {
+    clearTimeout(prefetchTimer);
+    prefetchTimer = null;
+  }
+  if (!currentPath || files.length < 2) {
+    clearImageCache();
+    return;
+  }
+  const idx = files.indexOf(currentPath);
+  if (idx === -1) return;
+
+  // Prioritas sliding window: [i + 1, i + 2, i - 1]
+  const n = files.length;
+  const candidates = [
+    files[(idx + 1) % n],
+    files[(idx + 2) % n],
+    files[(idx - 1 + n) % n],
+  ];
+  const queue: string[] = [];
+  for (const p of candidates) {
+    if (p && p !== currentPath && !queue.includes(p)) {
+      queue.push(p);
+    }
+  }
+
+  // Hapus & close() semua bitmap di luar sliding window aktif agar RAM tetap hemat
+  for (const key of Array.from(bitmapCache.keys())) {
+    if (!queue.includes(key)) {
+      evictCachedImage(key);
+    }
+  }
+
+  // Debounce 40ms agar rapid browsing (menahan tombol panah) membatalkan antrean yang terlewat
+  prefetchTimer = setTimeout(async () => {
+    for (let i = 0; i < queue.length; i++) {
+      if (seq !== prefetchSeq) return;
+      const target = queue[i];
+      if (bitmapCache.has(target)) continue;
+      try {
+        await invoke("prefetch_image", {
+          path: target,
+          window: i === 0 ? queue : null,
+        });
+        if (seq !== prefetchSeq || bitmapCache.has(target)) return;
+        const decoded = await decodeImageFromBackend(target);
+        if (seq !== prefetchSeq) {
+          decoded.bmp.close();
+          return;
+        }
+        cacheDecodedImage(target, decoded);
+      } catch {
+        // Abaikan kegagalan prefetch background
+      }
+    }
+  }, 40);
+}
+
+async function decodeImageFromBackend(path: string): Promise<DecodedImage> {
   const ext = extOf(path);
   const mime = WEB_MIMES[ext];
   if (mime) {
@@ -695,7 +845,7 @@ export async function readImage(
       const bmp = await blobToBitmap(blob);
       return { bmp, size: buf.byteLength, blob: isAnimated(ext, buf) ? blob : null };
     } catch {
-      // Fallback ke dekoder WIC Windows jika gagal di browser (mis. CMYK/16-bit/ICO khusus)
+      // Fallback ke dekoder native jika gagal di browser (mis. CMYK/16-bit/ICO khusus)
     }
   }
   const buf = await invoke<ArrayBuffer>("decode_image", { path });
@@ -707,4 +857,10 @@ export async function readImage(
     new ImageData(new Uint8ClampedArray(buf, 16, w * h * 4), w, h)
   );
   return { bmp, size, blob: null };
+}
+
+export async function readImage(path: string): Promise<DecodedImage> {
+  const cached = takeCachedImage(path);
+  if (cached) return cached;
+  return await decodeImageFromBackend(path);
 }

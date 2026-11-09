@@ -457,7 +457,9 @@
     }
   }
 
-  async function applyPastedUrl(url: string) {
+  async function applyPastedUrl(rawUrl: string) {
+    const url = rawUrl.trim().split(/\r?\n/)[0]?.trim() ?? "";
+    if (!url) return;
     try {
       let blob: Blob;
       if (url.startsWith("data:image/")) {
@@ -465,12 +467,12 @@
         blob = await res.blob();
       } else {
         try {
+          const buf = await invoke<ArrayBuffer>("download_url", { url });
+          blob = new Blob([buf]);
+        } catch {
           const res = await fetch(url);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           blob = await res.blob();
-        } catch {
-          const buf = await invoke<ArrayBuffer>("download_url", { url });
-          blob = new Blob([buf]);
         }
       }
       await applyPastedBlob(blob);
@@ -491,19 +493,40 @@
         }
       }
     } catch {
-      // Fallback ke pembacaan teks jika izin clipboard.read dibatasi
+      // Fallback ke pembacaan clipboard native / teks
     }
 
     try {
       const text = (await navigator.clipboard.readText()).trim();
-      if (text.startsWith("data:image/") || /^https?:\/\/.+/i.test(text)) {
+      if (text.startsWith("data:image/") || /^https?:\/\/\S+/i.test(text)) {
         await applyPastedUrl(text);
         return;
       }
-      toast.info("Tidak ada gambar atau URL di clipboard");
     } catch {
-      toast.info("Gunakan Ctrl+V untuk menempel gambar");
+      // WebKitGTK di Linux sering membatasi navigator.clipboard.readText()
     }
+
+    try {
+      const nativeText = (await invoke<string | null>("read_clipboard_text"))?.trim() ?? "";
+      if (nativeText.startsWith("data:image/") || /^https?:\/\/\S+/i.test(nativeText)) {
+        await applyPastedUrl(nativeText);
+        return;
+      }
+    } catch {
+      // Abaikan jika kosong
+    }
+
+    try {
+      const imgBuf = await invoke<ArrayBuffer>("read_clipboard_image");
+      if (imgBuf && imgBuf.byteLength > 0) {
+        await applyPastedBlob(new Blob([imgBuf], { type: "image/png" }));
+        return;
+      }
+    } catch {
+      // Abaikan jika tidak ada gambar di clipboard sistem
+    }
+
+    toast.info("Tidak ada gambar atau URL di clipboard");
   }
 
   async function onWindowPaste(e: ClipboardEvent) {
