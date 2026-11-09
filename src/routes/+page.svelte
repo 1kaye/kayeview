@@ -47,13 +47,20 @@
     SAVE_EXTS,
     applyOp,
     blobToBitmap,
+    cacheDecodedImage,
+    clearImageCache,
     drawStroke,
     editAnimatedGif,
     encode,
+    evictCachedImage,
     extOf,
     flatten,
+    hasMarks,
     readImage,
+    releaseCanvas,
+    releaseLayers,
     render,
+    schedulePrefetch,
     toBlob,
     writeFile,
   } from "$lib/editor";
@@ -233,15 +240,15 @@
 
     if (preview) {
       temp ??= document.createElement("canvas");
-      if (temp.width !== marks.width || temp.height !== marks.height) {
-        [temp.width, temp.height] = [marks.width, marks.height];
+      if (temp.width !== base.width || temp.height !== base.height) {
+        [temp.width, temp.height] = [base.width, base.height];
       }
       const t = temp.getContext("2d")!;
       t.clearRect(0, 0, temp.width, temp.height);
-      t.drawImage(marks, 0, 0);
+      if (hasMarks(layers)) t.drawImage(marks, 0, 0);
       drawStroke(t, preview);
       ctx.drawImage(temp, 0, 0);
-    } else {
+    } else if (hasMarks(layers)) {
       ctx.drawImage(marks, 0, 0);
     }
     dims = { w: base.width, h: base.height };
@@ -261,6 +268,7 @@
   function undo() {
     if (!img || !ops.length) return;
     ops = ops.slice(0, -1);
+    releaseLayers(layers);
     layers = render(img, ops);
     ocrLines = [];
     if (mode !== "mark") mode = "view";
@@ -302,7 +310,14 @@
   async function load(p: string) {
     try {
       const { bmp, size: bytes, blob } = await readImage(p);
-      img?.close();
+      if (img) {
+        if (path && path !== p && ops.length === 0) {
+          cacheDecodedImage(path, { bmp: img, size: fileSize, blob: rawBlob });
+        } else {
+          img.close();
+        }
+      }
+      releaseLayers(layers);
       setAnim(blob);
       pastedName = null;
       pastedFormat = null;
@@ -313,6 +328,7 @@
       if (!files.includes(p)) {
         files = await invoke<string[]>("list_images", { path: p });
       }
+      schedulePrefetch(files, p);
     } catch (e) {
       toast.error(`Gagal membuka gambar: ${e}`);
     }
@@ -323,6 +339,8 @@
     try {
       const bmp = await blobToBitmap(blob);
       img?.close();
+      releaseLayers(layers);
+      clearImageCache();
       setAnim(blob);
       pastedName = name;
       pastedFormat = format;
@@ -345,24 +363,75 @@
     }
   }
 
+  function detectImageMime(buf: ArrayBuffer, url: string): string {
+    const u = new Uint8Array(buf, 0, Math.min(buf.byteLength, 16));
+    if (u.length >= 4 && u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47)
+      return "image/png";
+    if (u.length >= 3 && u[0] === 0xff && u[1] === 0xd8 && u[2] === 0xff) return "image/jpeg";
+    if (u.length >= 4 && u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38)
+      return "image/gif";
+    if (
+      u.length >= 12 &&
+      u[0] === 0x52 &&
+      u[1] === 0x49 &&
+      u[2] === 0x46 &&
+      u[3] === 0x46 &&
+      u[8] === 0x57 &&
+      u[9] === 0x45 &&
+      u[10] === 0x42 &&
+      u[11] === 0x50
+    )
+      return "image/webp";
+    if (u.length >= 2 && u[0] === 0x42 && u[1] === 0x4d) return "image/bmp";
+    const ext = url.split("?")[0].split("#")[0].split(".").pop()?.toLowerCase() ?? "";
+    if (ext === "svg") return "image/svg+xml";
+    if (ext === "avif") return "image/avif";
+    if (ext === "gif") return "image/gif";
+    if (ext === "webp") return "image/webp";
+    if (ext === "png") return "image/png";
+    return "image/jpeg";
+  }
+
   async function loadFromUrl(url: string) {
     if (!(await confirmDiscard())) return;
     try {
       let blob: Blob;
       try {
+        const buf = await invoke<ArrayBuffer>("download_url", { url });
+        const mime = detectImageMime(buf, url);
+        blob = new Blob([buf], { type: mime });
+      } catch {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         blob = await res.blob();
-      } catch {
-        const buf = await invoke<ArrayBuffer>("download_url", { url });
-        blob = new Blob([buf]);
       }
-      const rawName = url.split("?")[0].split("/").pop() || "web-image";
-      const ext = rawName.includes(".") ? rawName.split(".").pop()!.toUpperCase() : "JPG";
+      const rawName = url.split("?")[0].split("#")[0].split("/").pop() || "web-image";
+      const fmtFromMime = blob.type.split("/")[1]?.split("+")[0]?.toUpperCase();
+      const ext =
+        rawName.includes(".") && rawName.split(".").pop()!.length <= 5
+          ? rawName.split(".").pop()!.toUpperCase()
+          : fmtFromMime || "JPG";
       await loadBlob(blob, rawName, ext, url);
     } catch (e) {
       toast.error(`Gagal mengunduh gambar: ${e}`);
     }
+  }
+
+  async function handlePastedText(rawText: string): Promise<boolean> {
+    const text = rawText.trim().split(/\r?\n/)[0]?.trim() ?? "";
+    if (!text) return false;
+    if (text.startsWith("data:image/")) {
+      const res = await fetch(text);
+      const blob = await res.blob();
+      const fmt = text.slice(5, text.indexOf(";")).split("/")[1]?.toUpperCase() || "PNG";
+      await loadBlob(blob, "Data Image", fmt);
+      return true;
+    }
+    if (/^https?:\/\/\S+/i.test(text)) {
+      await loadFromUrl(text);
+      return true;
+    }
+    return false;
   }
 
   async function pasteFromClipboard() {
@@ -378,25 +447,35 @@
         }
       }
     } catch {
-      // Fallback ke pembacaan teks jika izin clipboard.read dibatasi
+      // Fallback ke pembacaan clipboard native / teks
     }
 
     try {
-      const text = (await navigator.clipboard.readText()).trim();
-      if (text.startsWith("data:image/")) {
-        const res = await fetch(text);
-        const blob = await res.blob();
-        const fmt = text.slice(5, text.indexOf(";")).split("/")[1]?.toUpperCase() || "PNG";
-        await loadBlob(blob, "Data Image", fmt);
-        return;
-      } else if (/^https?:\/\/.+/i.test(text)) {
-        await loadFromUrl(text);
+      const text = await navigator.clipboard.readText();
+      if (text && (await handlePastedText(text))) return;
+    } catch {
+      // WebKitGTK di Linux sering membatasi navigator.clipboard.readText()
+    }
+
+    try {
+      const nativeText = await invoke<string | null>("read_clipboard_text");
+      if (nativeText && (await handlePastedText(nativeText))) return;
+    } catch {
+      // Abaikan jika kosong
+    }
+
+    try {
+      const imgBuf = await invoke<ArrayBuffer>("read_clipboard_image");
+      if (imgBuf && imgBuf.byteLength > 0) {
+        const blob = new Blob([imgBuf], { type: "image/png" });
+        await loadBlob(blob, "Salinan Gambar", "PNG");
         return;
       }
-      toast.info("Tidak ada gambar atau tautan gambar di clipboard");
     } catch {
-      toast.info("Gunakan Ctrl+V untuk menempel gambar");
+      // Abaikan jika tidak ada gambar di clipboard sistem
     }
+
+    toast.info("Tidak ada gambar atau tautan gambar di clipboard");
   }
 
   async function onWindowPaste(e: ClipboardEvent) {
@@ -540,11 +619,15 @@
     const idx = files.indexOf(cur);
     const remaining = files.filter((f) => f !== cur);
     try {
+      evictCachedImage(cur);
       await invoke("delete_file", { path: cur });
+      files = remaining;
       if (remaining.length > 0) {
         await load(remaining[idx % remaining.length]);
       } else {
         img?.close();
+        releaseLayers(layers);
+        clearImageCache();
         setAnim(null);
         pastedName = null;
         pastedFormat = null;
@@ -591,6 +674,7 @@
         data = await encode(layers, ext);
       }
       await writeFile(p, data);
+      evictCachedImage(p);
 
       const fname = p.split(/[\\/]/).pop() ?? p;
       toast.success(`Berhasil disimpan: ${fname}`);
@@ -607,6 +691,7 @@
           redraw();
         }
         files = await invoke<string[]>("list_images", { path: p });
+        schedulePrefetch(files, p);
       }
     } catch (e) {
       toast.error(`Gagal menyimpan: ${e}`);
@@ -688,6 +773,8 @@
     if (printSrc) URL.revokeObjectURL(printSrc);
     printSrc = "";
     mode = "view";
+    redraw();
+    requestAnimationFrame(() => redraw());
   }
 
   // ---------- Mode Switching & Windows Native OCR ----------
@@ -906,6 +993,8 @@
     if (stroke) {
       commit(stroke);
       stroke = null;
+      releaseCanvas(temp);
+      temp = undefined;
     }
     cropDrag = null;
   }
@@ -1086,7 +1175,7 @@
   <PrintView src={printSrc} aspect={printAspect} onclose={closePrint} />
 {/if}
 
-<main class:hidden={mode === "print"}>
+<main class:invisible={mode === "print"} class:pointer-events-none={mode === "print"}>
   <header class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-1.5 min-h-[42px] bg-card/75 backdrop-blur-md border-b border-border/80 text-foreground select-none">
     {#if mode === "mark"}
       <div class="flex items-center gap-1.5 justify-start">
